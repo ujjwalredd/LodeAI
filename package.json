@@ -1,0 +1,19 @@
+{
+  "name": "loadai",
+  "version": "1.0.0",
+  "description": "A complete prototype of an AI-powered technical recruitment platform that allows recruiters to create coding assessments and candidates to receive fully prepared, AI-guided coding environments.",
+  "main": "test-setup.js",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.58.0",
+    "openai": "^5.22.0"
+  }
+}

@@ -1,0 +1,1172 @@
+import * as vscode from 'vscode';
+import * as https from 'https';
+import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { Buffer } from 'buffer';
+import { AssessmentOrchestrator } from './orchestrator/assessment-orchestrator';
+import { CandidateAssignment, TestPlan } from './types/assessment-types';
+import { Logger } from './utils/logger';
+import { Config } from './utils/config';
+
+// Helper function to make HTTP requests
+function makeHttpRequest(url: string, data: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify(data);
+        const urlObj = new URL(url);
+        
+        const options = {
+            hostname: urlObj.hostname,
+            port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+            path: urlObj.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'User-Agent': 'LodeAI-VSCode-Extension/1.0.0',
+                'Accept': 'application/json',
+                'ngrok-skip-browser-warning': 'true' // Skip ngrok browser warning
+            }
+        };
+
+        const requestModule = urlObj.protocol === 'https:' ? https : http;
+        const req = requestModule.request(options, (res: any) => {
+            let responseData = '';
+            res.on('data', (chunk: any) => {
+                responseData += chunk;
+            });
+            res.on('end', () => {
+                try {
+                    // Check if response is JSON
+                    if (res.headers['content-type'] && res.headers['content-type'].includes('application/json')) {
+                        const result = JSON.parse(responseData);
+                        resolve(result);
+                    } else {
+                        // Handle non-JSON responses
+                        if (res.statusCode && res.statusCode >= 400) {
+                            reject(new Error(`HTTP ${res.statusCode}: ${responseData}`));
+                        } else {
+                            // Try to parse as JSON anyway, but with better error handling
+                            try {
+                                const result = JSON.parse(responseData);
+                                resolve(result);
+                            } catch (parseError) {
+                                reject(new Error(`Invalid JSON response: ${responseData.substring(0, 100)}...`));
+                            }
+                        }
+                    }
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        });
+
+        req.on('error', (error: any) => {
+            reject(error);
+        });
+
+        req.write(postData);
+        req.end();
+    });
+}
+
+export function activate(context: vscode.ExtensionContext) {
+    console.log('LodeAI 3-Agent Assessment Pipeline is now active!');
+
+    // Initialize logger
+    Logger.initialize();
+    
+    // Initialize config
+    Config.initialize(context);
+
+    let currentAssignment: CandidateAssignment | null = null;
+    let mainPanel: vscode.WebviewPanel | undefined;
+
+    // Create WebviewViewProvider for sidebar authentication
+    class LodeAIWebviewProvider implements vscode.WebviewViewProvider {
+        public static readonly viewType = 'lodeaiAssistant';
+        public _webviewView: vscode.WebviewView | undefined;
+
+        constructor(private readonly _extensionUri: vscode.Uri) {}
+
+        public resolveWebviewView(
+            webviewView: vscode.WebviewView,
+            context: vscode.WebviewViewResolveContext,
+            _token: vscode.CancellationToken,
+        ) {
+            Logger.info(`resolveWebviewView called for viewType: ${LodeAIWebviewProvider.viewType}`);
+            this._webviewView = webviewView;
+            
+            webviewView.webview.options = {
+                enableScripts: true,
+                localResourceRoots: [this._extensionUri]
+            };
+
+            const html = this._getHtmlForWebview(webviewView.webview);
+            webviewView.webview.html = html;
+            
+            Logger.info(`Webview HTML set successfully, length: ${html.length}`);
+
+            // Handle messages from the webview
+            webviewView.webview.onDidReceiveMessage(
+                async (message: any) => {
+            switch (message.type) {
+                case 'authenticate':
+                    await handleAuthentication(message.email);
+                    break;
+                case 'startAssessment':
+                    await setupAssessment();
+                    break;
+                    }
+                }
+            );
+        }
+
+        public _getHtmlForWebview(webview: vscode.Webview) {
+            return `<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>LodeAI - AI-Powered Coding Assessment</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, Roboto, Helvetica, Arial, sans-serif;
+                        background: #000000;
+                        color: #ffffff;
+                        min-height: 100vh;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: flex-start;
+                        padding: 20px;
+                        margin: 0;
+                        overflow-x: hidden;
+                    }
+                    .container {
+                        max-width: 520px;
+                        width: 100%;
+                        text-align: center;
+                    }
+                    .logo {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        margin-bottom: 16px;
+                        position: relative;
+                    }
+                    .logo-text {
+                        font-family: 'Cubao', 'Inter', system-ui, sans-serif;
+                        font-size: 16px;
+                        font-weight: 600;
+                        letter-spacing: 0.2px;
+                        color: #ffffff;
+                    }
+                    .hero-text {
+                        font-size: 24px;
+                        font-weight: 800;
+                        color: #ffffff;
+                        margin-bottom: 8px;
+                        line-height: 1.2;
+                        text-align: center;
+                    }
+                    .subtitle {
+                        font-size: 14px;
+                        color: #ffffff;
+                        margin-bottom: 20px;
+                        line-height: 1.6;
+                        text-align: center;
+                    }
+                    .auth-form {
+                        background: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.10);
+                        border-radius: 8px;
+                        padding: 16px;
+                        margin-bottom: 16px;
+                    }
+                    .form-title {
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: #e5e7eb;
+                        margin-bottom: 6px;
+                    }
+                    .form-subtitle {
+                        font-size: 13px;
+                        color: #9ca3af;
+                        margin-bottom: 18px;
+                    }
+                    .input-group {
+                        margin-bottom: 20px;
+                    }
+                    .input-label {
+                        display: block;
+                        font-size: 14px;
+                        font-weight: 500;
+                        color: #ffffff;
+                        margin-bottom: 8px;
+                        text-align: left;
+                    }
+                    .input-field {
+                        width: 100%;
+                        padding: 12px 14px;
+                        background: #0f1115;
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-radius: 10px;
+                        color: #ffffff;
+                        font-size: 15px;
+                        box-sizing: border-box;
+                        transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+                    }
+                    .input-field:focus {
+                        outline: none;
+                        border-color: rgba(255, 255, 255, 0.25);
+                        box-shadow: none;
+                        background: #13161c;
+                    }
+                    .submit-button {
+                        width: 100%;
+                        background: #ffffff;
+                        border: none;
+                        border-radius: 12px;
+                        color: #000000;
+                        font-size: 15px;
+                        font-weight: 800;
+                        padding: 14px 22px;
+                        cursor: pointer;
+                        transition: none;
+                        box-shadow: none;
+                    }
+                    .submit-button:hover {
+                        box-shadow: none;
+                    }
+                    .submit-button:disabled {
+                        opacity: 0.6;
+                        cursor: not-allowed;
+                        transform: none;
+                    }
+                    .error-message {
+                        background: rgba(248, 81, 73, 0.08);
+                        border: 1px solid rgba(248, 81, 73, 0.3);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        margin-top: 16px;
+                        font-size: 13px;
+                        color: #ffd1cc;
+                        display: none;
+                        box-shadow: none;
+                    }
+                    .error-message.show {
+                        display: block;
+                    }
+                    .status-message {
+                        background: rgba(34, 197, 94, 0.08);
+                        border: 1px solid rgba(34, 197, 94, 0.3);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        margin-top: 16px;
+                        font-size: 13px;
+                        color: #a7f3d0;
+                        display: none;
+                        box-shadow: none;
+                    }
+                    .status-message.show {
+                        display: block;
+                    }
+                    
+                    /* Chat Interface Styles */
+                    .chat-container {
+                        display: none;
+                        flex-direction: column;
+                        background: rgba(255, 255, 255, 0.02);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 16px;
+                        overflow: hidden;
+                        min-height: 400px;
+                        margin-top: 20px;
+                        max-width: 800px;
+                        width: 100%;
+                    }
+                    
+                    .chat-header {
+                        padding: 16px 20px;
+                        background: rgba(255, 255, 255, 0.03);
+                        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                    }
+                    
+                    .chat-title {
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: #ffffff;
+                    }
+                    
+                    .chat-status {
+                        font-size: 12px;
+                        color: #9ca3af;
+                    }
+                    
+                    .chat-messages {
+                        flex: 1;
+                        padding: 20px;
+                        overflow-y: auto;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 16px;
+                        max-height: 400px;
+                    }
+                    
+                    .message {
+                        display: flex;
+                        gap: 12px;
+                        animation: slideIn 0.3s ease-out;
+                    }
+                    
+                    @keyframes slideIn {
+                        from { opacity: 0; transform: translateY(10px); }
+                        to { opacity: 1; transform: translateY(0); }
+                    }
+                    
+                    .message-avatar {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 8px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 14px;
+                        font-weight: bold;
+                        flex-shrink: 0;
+                    }
+                    
+                    .message-avatar.ai {
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                    }
+                    
+                    .message-avatar.system {
+                        background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+                        color: white;
+                    }
+                    
+                    .message-content {
+                        flex: 1;
+                        padding: 12px 16px;
+                        border-radius: 12px;
+                        font-size: 14px;
+                        line-height: 1.6;
+                        word-wrap: break-word;
+                    }
+                    
+                    .message-content.ai {
+                        background: rgba(102, 126, 234, 0.1);
+                        border: 1px solid rgba(102, 126, 234, 0.2);
+                        color: #e5e7eb;
+                    }
+                    
+                    .message-content.system {
+                        background: rgba(34, 197, 94, 0.1);
+                        border: 1px solid rgba(34, 197, 94, 0.2);
+                        color: #d1fae5;
+                    }
+                    
+                    .message-content.error {
+                        background: rgba(248, 81, 73, 0.1);
+                        border: 1px solid rgba(248, 81, 73, 0.2);
+                        color: #fecaca;
+                    }
+                    
+                    .message-content.warning {
+                        background: rgba(245, 158, 11, 0.1);
+                        border: 1px solid rgba(245, 158, 11, 0.2);
+                        color: #fde68a;
+                    }
+                    
+                    .message-content.success {
+                        background: rgba(34, 197, 94, 0.1);
+                        border: 1px solid rgba(34, 197, 94, 0.2);
+                        color: #d1fae5;
+                    }
+                    
+                    .message-meta {
+                        font-size: 11px;
+                        color: #9ca3af;
+                        margin-top: 4px;
+                    }
+                    
+                    .typing-indicator {
+                        display: none;
+                        align-items: center;
+                        gap: 12px;
+                        padding: 12px 16px;
+                        background: rgba(102, 126, 234, 0.05);
+                        border: 1px solid rgba(102, 126, 234, 0.1);
+                        border-radius: 12px;
+                        margin: 16px 0;
+                    }
+                    
+                    .typing-dots {
+                        display: flex;
+                        gap: 4px;
+                    }
+                    
+                    .typing-dot {
+                        width: 6px;
+                        height: 6px;
+                        background: #667eea;
+                        border-radius: 50%;
+                        animation: typing 1.4s infinite;
+                    }
+                    
+                    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+                    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+                    
+                    @keyframes typing {
+                        0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+                        30% { opacity: 1; transform: scale(1); }
+                    }
+                    .form-subtitle {
+                        font-size: 13px;
+                        color: #9ca3af;
+                        margin-bottom: 18px;
+                    }
+                    .input-group {
+                        margin-bottom: 20px;
+                    }
+                    .input-label {
+                        display: block;
+                        font-size: 14px;
+                        font-weight: 500;
+                        color: #ffffff;
+                        margin-bottom: 8px;
+                        text-align: left;
+                    }
+                    .input-field {
+                        width: 100%;
+                        padding: 12px 14px;
+                        background: #0f1115;
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-radius: 10px;
+                        color: #ffffff;
+                        font-size: 15px;
+                        box-sizing: border-box;
+                        transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+                    }
+                    .input-field:focus {
+                        outline: none;
+                        border-color: rgba(255, 255, 255, 0.25);
+                        box-shadow: none;
+                        background: #13161c;
+                    }
+                    .submit-button {
+                        width: 100%;
+                        background: #ffffff;
+                        border: none;
+                        border-radius: 12px;
+                        color: #000000;
+                        font-size: 15px;
+                        font-weight: 800;
+                        padding: 14px 22px;
+                        cursor: pointer;
+                        transition: none;
+                        box-shadow: none;
+                    }
+                    .submit-button:hover {
+                        box-shadow: none;
+                    }
+                    .submit-button:disabled {
+                        opacity: 0.6;
+                        cursor: not-allowed;
+                        transform: none;
+                    }
+                    .error-message {
+                        background: rgba(248, 81, 73, 0.08);
+                        border: 1px solid rgba(248, 81, 73, 0.3);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        margin-top: 16px;
+                        font-size: 13px;
+                        color: #ffd1cc;
+                        display: none;
+                        box-shadow: none;
+                    }
+                    .error-message.show {
+                        display: block;
+                    }
+                    .status-message {
+                        background: rgba(34, 197, 94, 0.08);
+                        border: 1px solid rgba(34, 197, 94, 0.3);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        margin-top: 16px;
+                        font-size: 13px;
+                        color: #a7f3d0;
+                        display: none;
+                        box-shadow: none;
+                    }
+                    .status-message.show {
+                        display: block;
+                    }
+                    .progress-container {
+                        display: none;
+                        background: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.10);
+                        border-radius: 12px;
+                        padding: 22px;
+                        margin-top: 16px;
+                    }
+                    .progress-container.show {
+                        display: block;
+                    }
+                    .progress-messages {
+                        max-height: 200px;
+                        overflow-y: auto;
+                        font-size: 13px;
+                        line-height: 1.4;
+                    }
+                    .progress-message {
+                        background: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.10);
+                        border-radius: 8px;
+                        padding: 8px 12px;
+                        margin: 4px 0;
+                        font-size: 12px;
+                        color: #ffffff;
+                    }
+                    .ai-streaming {
+                        padding: 20px;
+                        margin-bottom: 8px;
+                        background: #000000;
+                        border: 1px solid #333333;
+                        border-radius: 8px;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+                        min-height: 300px;
+                        position: relative;
+                    }
+                    .streaming-content {
+                        max-height: calc(100vh - 200px);
+                        overflow-y: auto;
+                        padding-right: 8px;
+                        background: #000000;
+                        color: #ffffff;
+                    }
+                    .streaming-line {
+                        font-size: 14px;
+                        color: #ffffff;
+                        font-weight: 400;
+                        line-height: 1.4;
+                        margin-bottom: 2px;
+                        padding: 0;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+                        white-space: pre-wrap;
+                    }
+                    .streaming-line.thinking {
+                        color: #ffffff;
+                        filter: blur(0.5px);
+                        font-style: italic;
+                    }
+                    .streaming-line.action {
+                        color: #ffffff;
+                    }
+                    .streaming-line.success {
+                        color: #ffffff;
+                    }
+                    .streaming-line.error {
+                        color: #ffffff;
+                    }
+                    .streaming-line.info {
+                        color: #ffffff;
+                    }
+                    .streaming-line.plan {
+                        color: #ffffff;
+                    }
+                    .streaming-line.execute {
+                        color: #ffffff;
+                    }
+                    .terminal-cursor {
+                        display: inline-block;
+                        width: 8px;
+                        height: 16px;
+                        background: #ffffff;
+                        animation: blink 1s infinite;
+                        margin-left: 2px;
+                    }
+                    @keyframes fadeInLine {
+                        from {
+                            opacity: 0;
+                            transform: translateY(4px);
+                        }
+                        to {
+                            opacity: 1;
+                            transform: translateY(0);
+                        }
+                    }
+                    .typing-cursor {
+                        display: inline-block;
+                        width: 2px;
+                        height: 14px;
+                        background: #ffffff;
+                        animation: blink 1s infinite;
+                        margin-left: 2px;
+                    }
+                    @keyframes blink {
+                        0%, 50% { opacity: 1; }
+                        51%, 100% { opacity: 0; }
+                    }
+                    @keyframes streamingPulse {
+                        0%, 60%, 100% {
+                            transform: scale(1);
+                            opacity: 0.5;
+                        }
+                        30% {
+                            transform: scale(1.2);
+                            opacity: 1;
+                        }
+                    }
+                    @keyframes fadeSlideIn {
+                        0% { opacity: 0; transform: translateY(3px); }
+                        100% { opacity: 1; transform: translateY(0); }
+                    }
+                    .enter { animation: fadeSlideIn 150ms ease forwards; }
+                    @media (max-width: 480px) {
+                        .container { max-width: 100%; }
+                        .hero-text { font-size: 26px; }
+                        .subtitle { font-size: 14px; }
+                        .auth-form { padding: 20px; border-radius: 14px; }
+                    }
+                    @media (prefers-reduced-motion: reduce) {
+                        * { animation: none !important; transition: none !important; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="main-container">
+                    <!-- Header -->
+                    <div class="header">
+                        <div class="logo-section">
+                            <div class="logo-icon">L</div>
+                            <div class="logo-text">LodeAI</div>
+                        </div>
+                        <div class="status-indicator" id="statusIndicator">
+                            <div class="status-dot"></div>
+                            <span id="statusText">Ready</span>
+                        </div>
+                    </div>
+
+                    <!-- Authentication Form -->
+                    <div class="auth-form" id="authFormContainer">
+                        <h2 class="form-title">Welcome to LodeAI</h2>
+                        <p class="form-subtitle">AI-Powered Technical Assessment Platform</p>
+                        <p style="color: #9ca3af; font-size: 14px; margin-bottom: 20px;">Enter your email to access your personalized assessment</p>
+                        
+                        <form id="authForm">
+                            <div class="input-group">
+                                <label class="input-label" for="email">Email Address</label>
+                                <input 
+                                    type="email" 
+                                    id="email" 
+                                    class="input-field" 
+                                    placeholder="your.email@example.com"
+                                    required
+                                >
+                            </div>
+                            
+                            <button type="submit" class="submit-button" id="submitButton">
+                                Start Assessment
+                            </button>
+                        </form>
+                        
+                        <div class="error-message" id="errorMessage"></div>
+                        <div class="status-message" id="statusMessage"></div>
+                    </div>
+
+                    <!-- Chat Interface -->
+                    <div class="chat-container" id="chatContainer" style="display: none;">
+                        <div class="chat-header">
+                            <div class="chat-title">AI Assessment Assistant</div>
+                            <div class="chat-status" id="chatStatus">
+                                <span id="chatStatusText">Initializing...</span>
+                            </div>
+                        </div>
+                        
+                        <div class="chat-messages" id="chatMessages">
+                            <!-- Messages will be dynamically added here -->
+                        </div>
+                        
+                        <!-- Typing indicator -->
+                        <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                            <div class="message-avatar ai">AI</div>
+                            <div class="typing-dots">
+                                <div class="typing-dot"></div>
+                                <div class="typing-dot"></div>
+                                <div class="typing-dot"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    const vscode = acquireVsCodeApi();
+                    const form = document.getElementById('authForm');
+                    const emailInput = document.getElementById('email');
+                    const submitButton = document.getElementById('submitButton');
+                    const errorMessage = document.getElementById('errorMessage');
+                    const statusMessage = document.getElementById('statusMessage');
+                    const authFormContainer = document.getElementById('authFormContainer');
+                    const chatContainer = document.getElementById('chatContainer');
+                    const chatMessages = document.getElementById('chatMessages');
+                    const typingIndicator = document.getElementById('typingIndicator');
+                    const statusIndicator = document.getElementById('statusIndicator');
+                    const statusText = document.getElementById('statusText');
+                    const chatStatusText = document.getElementById('chatStatusText');
+
+                    function showError(message) {
+                        errorMessage.textContent = message;
+                        errorMessage.classList.add('show');
+                        statusMessage.classList.remove('show');
+                        submitButton.disabled = false;
+                        submitButton.textContent = 'Start Assessment';
+                        updateStatus('error', 'Authentication Failed');
+                    }
+
+                    function showStatus(message) {
+                        statusMessage.textContent = message;
+                        statusMessage.classList.add('show');
+                        errorMessage.classList.remove('show');
+                    }
+
+                    function showChatInterface() {
+                        authFormContainer.style.display = 'none';
+                        chatContainer.style.display = 'flex';
+                        updateStatus('active', 'Assessment in Progress');
+                        addMessage('system', 'Welcome! Your AI assessment is being prepared. I\'ll guide you through the process.');
+                    }
+
+                    function updateStatus(type, text) {
+                        const indicator = statusIndicator;
+                        const dot = indicator.querySelector('.status-dot');
+                        
+                        indicator.className = 'status-indicator';
+                        statusText.textContent = text;
+                        
+                        switch (type) {
+                            case 'ready':
+                                indicator.style.background = 'rgba(34, 197, 94, 0.1)';
+                                indicator.style.borderColor = 'rgba(34, 197, 94, 0.3)';
+                                indicator.style.color = '#22c55e';
+                                dot.style.background = '#22c55e';
+                                break;
+                            case 'active':
+                                indicator.style.background = 'rgba(59, 130, 246, 0.1)';
+                                indicator.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+                                indicator.style.color = '#3b82f6';
+                                dot.style.background = '#3b82f6';
+                                break;
+                            case 'error':
+                                indicator.style.background = 'rgba(248, 81, 73, 0.1)';
+                                indicator.style.borderColor = 'rgba(248, 81, 73, 0.3)';
+                                indicator.style.color = '#f85149';
+                                dot.style.background = '#f85149';
+                                break;
+                        }
+                    }
+
+                    function addMessage(sender, content, type = 'info') {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = 'message';
+                        
+                        const avatar = document.createElement('div');
+                        avatar.className = 'message-avatar ' + sender;
+                        avatar.textContent = sender === 'ai' ? 'AI' : sender === 'user' ? 'U' : 'S';
+                        
+                        const messageContent = document.createElement('div');
+                        messageContent.className = 'message-content ' + type;
+                        messageContent.innerHTML = formatMessage(content);
+                        
+                        const messageMeta = document.createElement('div');
+                        messageMeta.className = 'message-meta';
+                        messageMeta.innerHTML = '<span>' + new Date().toLocaleTimeString() + '</span><span>' + sender.toUpperCase() + '</span>';
+                        
+                        messageDiv.appendChild(avatar);
+                        messageContent.appendChild(messageMeta);
+                        messageDiv.appendChild(messageContent);
+                        
+                        chatMessages.appendChild(messageDiv);
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                        
+                        return messageDiv;
+                    }
+
+                    function formatMessage(content) {
+                        return content
+                            .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                            .replace(/\*(.*?)\*/g, "<em>$1</em>")
+                            .replace(/\`(.*?)\`/g, "<code style=\"background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace;\">$1</code>")
+                            .replace(/\n/g, "<br>");
+                    }
+
+                    function showTypingIndicator() {
+                        typingIndicator.style.display = 'flex';
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+
+                    function hideTypingIndicator() {
+                        typingIndicator.style.display = 'none';
+                    }
+
+                    function streamMessage(sender, content, type = 'info', speed = 20) {
+                        return new Promise((resolve) => {
+                            showTypingIndicator();
+                            
+                            setTimeout(() => {
+                                hideTypingIndicator();
+                                
+                                const messageDiv = addMessage(sender, '', type);
+                                const messageContent = messageDiv.querySelector('.message-content');
+                                
+                                let index = 0;
+                                const interval = setInterval(() => {
+                                    if (index < content.length) {
+                                        messageContent.innerHTML = formatMessage(content.substring(0, index + 1));
+                                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                                        index++;
+                                    } else {
+                                        clearInterval(interval);
+                                        resolve();
+                                    }
+                                }, speed);
+                            }, 500);
+                        });
+                    }
+
+                    function updateChatStatus(status) {
+                        chatStatusText.textContent = status;
+                    }
+
+                    function simulateAssessmentCreation() {
+
+                        let currentIndex = 0;
+                        
+                        async function showNextMessage() {
+                            if (currentIndex < messages.length) {
+                                const message = messages[currentIndex];
+                                await streamTextCharacterByCharacter(message.text, message.type, 30);
+                                currentIndex++;
+                                setTimeout(showNextMessage, message.delay);
+                            } else {
+                                // Assessment creation complete
+                                setTimeout(async () => {
+                                    await streamTextCharacterByCharacter("Assessment ready! Opening in new window...", "success", 30);
+                                    setTimeout(() => {
+                                        hideStreamingIndicator();
+                                    }, 2000);
+                                }, 1000);
+                            }
+                        }
+                        
+                        showNextMessage();
+                    }
+
+                    form.addEventListener('submit', (e) => {
+                        e.preventDefault();
+                        const email = emailInput.value.trim();
+                        
+                        console.log('Form submitted with email:', email);
+                        
+                        if (!email) {
+                            showError('Please enter your email address');
+                            return;
+                        }
+
+                        console.log('Email validation result:', isValidEmail(email));
+                        if (!isValidEmail(email)) {
+                            showError('Please enter a valid email address');
+                            return;
+                        }
+
+                        submitButton.disabled = true;
+                        submitButton.textContent = 'Authenticating...';
+                        showStatus('Authenticating with recruiter dashboard...');
+                        updateStatus('active', 'Authenticating...');
+                        
+                        console.log('Sending authenticate message to extension');
+                        vscode.postMessage({
+                            type: 'authenticate',
+                            email: email
+                        });
+                    });
+
+                    function isValidEmail(email) {
+                        console.log('Validating email:', email);
+                        console.log('Email length:', email.length);
+                        console.log('Email characters:', email.split('').map(c => c.charCodeAt(0)));
+                        
+                        // Simple email validation - just check for @ and .
+                        const hasAt = email.includes('@');
+                        const hasDot = email.includes('.');
+                        const hasSpace = email.includes(' ');
+                        
+                        console.log('Has @:', hasAt);
+                        console.log('Has .:', hasDot);
+                        console.log('Has space:', hasSpace);
+                        
+                        const result = hasAt && hasDot && !hasSpace && email.length > 5;
+                        console.log('Simple validation result:', result);
+                        
+                        // Also try regex validation
+                        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                        const regexResult = emailRegex.test(email);
+                        console.log('Regex test result:', regexResult);
+                        
+                        return result || regexResult;
+                    }
+
+                    window.addEventListener('message', (event) => {
+                        const message = event.data;
+                        console.log('Received message from extension:', message);
+                        
+                        if (message.type === 'authError') {
+                            console.log('Authentication error:', message.message);
+                            showError(message.message);
+                        } else if (message.type === 'authSuccess') {
+                            console.log('Authentication successful');
+                            showStatus('Authentication successful! Starting assessment...');
+                            submitButton.textContent = 'Authentication Successful!';
+                            
+                            setTimeout(() => {
+                                vscode.postMessage({
+                                    type: 'startAssessment'
+                                });
+                                showChatInterface();
+                            }, 1000);
+                        } else if (message.type === 'agentMessage') {
+                            // Show real AI content in chat interface
+                            const content = message.payload.content;
+                            const level = message.payload.level;
+                            
+                            // Determine message type based on level
+                            let messageType = 'info';
+                            if (level === 'success') {
+                                messageType = 'success';
+                            } else if (level === 'error') {
+                                messageType = 'error';
+                            } else if (level === 'warning') {
+                                messageType = 'warning';
+                            } else if (level === 'execute' || level === 'plan') {
+                                messageType = 'info';
+                            }
+                            
+                            // Stream the AI message
+                            streamMessage('ai', content, messageType);
+                            
+                            // Update chat status
+                            if (level === 'plan') {
+                                updateChatStatus('Planning assessment...');
+                            } else if (level === 'execute') {
+                                updateChatStatus('Executing tasks...');
+                            } else if (level === 'success') {
+                                updateChatStatus('Assessment complete!');
+                                updateStatus('ready', 'Assessment Ready');
+                            } else if (level === 'error') {
+                                updateChatStatus('Error occurred');
+                                updateStatus('error', 'Error');
+                            }
+                        }
+                    });
+                </script>
+            </body>
+            </html>`;
+        }
+    }
+
+    const webviewProvider = new LodeAIWebviewProvider(context.extensionUri);
+    const webviewView = vscode.window.registerWebviewViewProvider(LodeAIWebviewProvider.viewType, webviewProvider);
+    
+    Logger.info(`WebviewViewProvider registered for viewType: ${LodeAIWebviewProvider.viewType}`);
+
+    // Auto-open the sidebar when extension activates
+    setTimeout(() => {
+        vscode.commands.executeCommand('lodeai.showSidebar');
+    }, 1000);
+
+    async function handleAuthentication(email: string) {
+        Logger.info(`Starting authentication for email: ${email}`);
+
+        try {
+            // Try new recruiter dashboard system first
+            try {
+                Logger.info('Attempting to connect to recruiter dashboard...');
+                Logger.info(`Making request to: http://localhost:3001/api/validate-candidate`);
+                Logger.info(`Request body: ${JSON.stringify({ email, job_description: '' })}`);
+                
+                const validationResult = await makeHttpRequest('http://localhost:3001/api/validate-candidate', {
+                    email: email,
+                    job_description: '' // We'll get this from the response
+                });
+
+                Logger.info(`API response: ${JSON.stringify(validationResult)}`);
+                
+                if (validationResult && validationResult.valid && validationResult.assignment) {
+                    Logger.info('Assignment found, proceeding with authentication...');
+                    // Create assignment object compatible with existing system
+                    const assignmentData = {
+                        id: validationResult.assignment.id,
+                        test_plan_id: validationResult.assignment.id,
+                        candidate_email: validationResult.assignment.candidate_email,
+                        status: 'pending' as const,
+                        created_at: validationResult.assignment.assigned_at || new Date().toISOString(),
+                        test_plans: {
+                            id: validationResult.assignment.id,
+                            assignment: validationResult.assignment.job_description,
+                            required_files: [],
+                            dependencies: [],
+                            instructions: '',
+                            job_descriptions: {
+                                title: validationResult.assignment.job_title || '',
+                                description: validationResult.assignment.job_description,
+                                requirements: []
+                            }
+                        }
+                    };
+                    
+                    currentAssignment = assignmentData;
+                    
+                    // Send success message to webview
+                    webviewProvider._webviewView?.webview.postMessage({
+                        type: 'authSuccess',
+                        message: 'Authentication successful!'
+                    });
+                    return;
+                } else {
+                    Logger.warn('No valid assignment found for email:', email);
+                    Logger.warn('API response was:', JSON.stringify(validationResult));
+                    
+                    // Send error message to webview
+                    webviewProvider._webviewView?.webview.postMessage({
+                        type: 'authError',
+                        message: 'No assignment found for this email address. Please contact your recruiter.'
+                    });
+                    return;
+                }
+            } catch (fetchError) {
+                Logger.error('New validation endpoint failed:', fetchError);
+                const errorMessage = fetchError instanceof Error ? fetchError.message : 'Unknown error';
+                
+                // Provide more specific error information
+                if (errorMessage.includes('Invalid JSON response')) {
+                    Logger.error('Server returned non-JSON response. This might indicate:');
+                    Logger.error('1. The endpoint is not available');
+                    Logger.error('2. The server is returning an HTML error page');
+                    Logger.error('3. The ngrok tunnel might be down');
+                } else if (errorMessage.includes('HTTP 4') || errorMessage.includes('HTTP 5')) {
+                    Logger.error('Server returned HTTP error. Check if the endpoint is working.');
+                } else {
+                    Logger.error('Network or connection error occurred.');
+                }
+                
+                // No fallback - require database connection
+                Logger.error('Database connection failed. Please ensure the dashboard is running.');
+                
+                // Send error message to webview
+                webviewProvider._webviewView?.webview.postMessage({
+                    type: 'authError',
+                    message: `Unable to connect to recruiter dashboard: ${errorMessage}`
+                });
+                return;
+            }
+
+        } catch (error) {
+            Logger.error('Authentication error:', error);
+            
+            // Send error message to webview
+            webviewProvider._webviewView?.webview.postMessage({
+                type: 'authError',
+                message: 'Error validating email address. Please try again.'
+            });
+        }
+    }
+
+    async function setupAssessment() {
+        if (!currentAssignment) {
+            vscode.window.showErrorMessage('Please authenticate first by entering your email address.');
+            return;
+        }
+
+        // Determine project directory
+        let baseDirectory: string;
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        
+        if (workspaceFolders && workspaceFolders.length > 0) {
+            baseDirectory = workspaceFolders[0].uri.fsPath;
+        } else {
+            baseDirectory = os.homedir();
+        }
+
+        const projectPath = path.join(baseDirectory, `lodeai-assessment-${Date.now()}`);
+        if (!fs.existsSync(projectPath)) {
+            fs.mkdirSync(projectPath, { recursive: true });
+        }
+
+        try {
+            const orchestrator = new AssessmentOrchestrator(undefined, projectPath, webviewProvider);
+            
+            const jobDescription = currentAssignment.test_plans.assignment;
+            const resumeText = currentAssignment.resume_text || 'Resume content not available';
+            
+            const success = await orchestrator.createAssessment(jobDescription, resumeText);
+            
+            if (success) {
+                vscode.window.showInformationMessage('Assessment created successfully!');
+                
+                // Open the project in new window
+                const uri = vscode.Uri.file(projectPath);
+                vscode.commands.executeCommand('vscode.openFolder', uri, true);
+            } else {
+                vscode.window.showErrorMessage('Assessment creation failed. Please check the logs.');
+            }
+
+        } catch (error) {
+            const errorMessage = `Assessment setup error: ${error}`;
+            vscode.window.showErrorMessage(`${errorMessage}`);
+            Logger.error('Assessment setup error:', error);
+        }
+    }
+
+    const setupAssessmentCommand = vscode.commands.registerCommand('lodeai.setupAssessment', setupAssessment);
+
+    // Register commands for sidebar
+    const showSidebarCommand = vscode.commands.registerCommand('lodeai.showSidebar', () => {
+        vscode.commands.executeCommand('lodeaiAssistant.focus');
+    });
+    
+    const authenticateCommand = vscode.commands.registerCommand('lodeai.authenticate', async () => {
+        const email = await vscode.window.showInputBox({
+            prompt: 'Enter your email address',
+            placeHolder: 'your.email@example.com',
+            validateInput: (text: string) => {
+                if (!text || !text.includes('@')) {
+                    return 'Please enter a valid email address';
+                }
+                return null;
+            }
+        });
+
+        if (email) {
+            await handleAuthentication(email);
+        }
+    });
+
+    const refreshWebviewCommand = vscode.commands.registerCommand('lodeai.refreshWebview', () => {
+        if (webviewProvider._webviewView) {
+            const html = webviewProvider._getHtmlForWebview(webviewProvider._webviewView.webview);
+            webviewProvider._webviewView.webview.html = html;
+            Logger.info('Webview refreshed manually');
+        }
+    });
+
+    context.subscriptions.push(setupAssessmentCommand, showSidebarCommand, authenticateCommand, refreshWebviewCommand, webviewView);
+}
+
+export function deactivate() {}

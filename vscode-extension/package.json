@@ -1,0 +1,105 @@
+{
+  "name": "lodeai",
+  "displayName": "LodeAI",
+  "publisher": "lodeai",
+  "version": "1.0.0",
+  "description": "A complete prototype of an AI-powered technical recruitment platform that allows recruiters to create coding assessments and candidates to receive fully prepared, AI-guided coding environments.",
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lodeai",
+          "title": "LodeAI",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "lodeai": [
+        {
+          "type": "webview",
+          "id": "lodeaiAssistant",
+          "name": "Assessment",
+          "icon": "$(robot)",
+          "contextualTitle": "LodeAI Assessment",
+          "when": "true"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "lodeai.showSidebar",
+        "title": "Show LodeAI Sidebar",
+        "category": "LodeAI"
+      },
+      {
+        "command": "lodeai.authenticate",
+        "title": "Authenticate with Email",
+        "category": "LodeAI"
+      },
+      {
+        "command": "lodeai.setupAssessment",
+        "title": "Setup Assessment",
+        "category": "LodeAI"
+      },
+      {
+        "command": "lodeai.refreshWebview",
+        "title": "Refresh Webview",
+        "category": "LodeAI"
+      },
+      {
+        "command": "lodeai.buildSandbox",
+        "title": "Build Sandbox Environment",
+        "category": "LodeAI",
+        "icon": "$(package)"
+      },
+      {
+        "command": "lodeai.runInSandbox",
+        "title": "Run Tests in Sandbox",
+        "category": "LodeAI",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lodeai.cleanupSandboxes",
+        "title": "Cleanup All Sandboxes",
+        "category": "LodeAI",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "lodeai.sandboxStatus",
+        "title": "Show Sandbox Status",
+        "category": "LodeAI",
+        "icon": "$(info)"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.64.0",
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "@supabase/supabase-js": "^2.57.4"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^4.9.5"
+  }
+}

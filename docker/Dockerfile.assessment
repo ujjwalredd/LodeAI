@@ -1,0 +1,48 @@
+# LodeAI Assessment Environment Dockerfile
+FROM node:18-alpine
+
+# Install system dependencies
+RUN apk add --no-cache \
+    git \
+    curl \
+    bash \
+    python3 \
+    py3-pip \
+    build-base \
+    gcc \
+    g++ \
+    make
+
+# Install common development tools
+RUN npm install -g \
+    typescript \
+    ts-node \
+    nodemon \
+    jest \
+    mocha \
+    chai \
+    eslint \
+    prettier
+
+# Create assessment workspace
+WORKDIR /assessment
+
+# Create directory structure
+RUN mkdir -p /assessment/src \
+    /assessment/tests \
+    /assessment/docs \
+    /assessment/scripts
+
+# Copy assessment setup scripts
+COPY docker/scripts/ /assessment/scripts/
+RUN chmod +x /assessment/scripts/*.sh
+
+# Set up environment
+ENV NODE_ENV=development
+ENV ASSESSMENT_MODE=true
+
+# Expose common development ports
+EXPOSE 3000 3001 8080 8000
+
+# Default command
+CMD ["/assessment/scripts/start-assessment.sh"]

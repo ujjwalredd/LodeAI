@@ -1,0 +1,42 @@
+# Source files
+src/**
+tsconfig.json
+.vscode/**
+.vscode-test/**
+
+# Development files
+*.ts
+*.map
+*.log
+*.tmp
+
+# Dependencies (commented out to include them in package)
+# node_modules/**
+
+# Build artifacts
+out/test/**
+out/**/*.map
+
+# Documentation
+README.md
+CHANGELOG.md
+LICENSE
+
+# Git
+.git/**
+.gitignore
+
+# IDE
+.vscode/**
+.idea/**
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package files
+*.vsix
+package-lock.json
+yarn.lock

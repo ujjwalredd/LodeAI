@@ -1,0 +1,104 @@
+# Multi-Language Sandbox Dockerfile for LodeAI Assessments
+# Supports: Python, JavaScript, TypeScript, Java, Go, C++
+# Provides secure, isolated environment for running candidate code
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Security: Create non-root user first
+RUN useradd -m -u 1000 -s /bin/bash sandbox && \
+    mkdir -p /assessment /results && \
+    chown -R sandbox:sandbox /assessment /results
+
+# Install system dependencies and compilers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build essentials
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    cmake \
+    # Version control
+    git \
+    # Utilities
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    # Python
+    python3.11 \
+    python3-pip \
+    python3-venv \
+    # Node.js (we'll install via NodeSource)
+    # Java (OpenJDK)
+    openjdk-17-jdk \
+    # Go (we'll install latest)
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js LTS (20.x)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Go
+RUN GO_VERSION=1.21.5 && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o go.tar.gz && \
+    tar -C /usr/local -xzf go.tar.gz && \
+    rm go.tar.gz
+
+# Set up Go environment
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/home/sandbox/go"
+ENV GOBIN="/home/sandbox/go/bin"
+
+# Install Python packages for assessments
+COPY docker/python-requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Install global Node.js packages for testing
+RUN npm install -g \
+    typescript \
+    ts-node \
+    @types/node \
+    jest \
+    mocha \
+    chai \
+    @jest/globals
+
+# Create npm global directory for sandbox user (security)
+RUN mkdir -p /home/sandbox/.npm-global && \
+    chown -R sandbox:sandbox /home/sandbox/.npm-global && \
+    chown -R sandbox:sandbox /home/sandbox
+
+# Switch to non-root user
+USER sandbox
+
+# Set npm global directory for sandbox user
+ENV NPM_CONFIG_PREFIX=/home/sandbox/.npm-global
+ENV PATH="/home/sandbox/.npm-global/bin:${PATH}"
+
+# Set working directory
+WORKDIR /assessment
+
+# Set environment variables for all languages
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    NODE_ENV=test \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    ASSESSMENT_MODE=true
+
+# Health check - verify all language runtimes are available
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 --version && \
+        node --version && \
+        java -version && \
+        go version && \
+        g++ --version
+
+# Default command - will be overridden by sandbox manager based on language
+CMD ["echo", "LodeAI Multi-Language Sandbox Ready"]

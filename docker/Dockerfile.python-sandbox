@@ -1,0 +1,42 @@
+# Python Sandbox Dockerfile for LodeAI Assessments
+# Provides secure, isolated environment for running candidate code
+
+FROM python:3.11-slim
+
+# Security: Run as non-root user
+RUN useradd -m -u 1000 -s /bin/bash sandbox && \
+    mkdir -p /assessment /results && \
+    chown -R sandbox:sandbox /assessment /results
+
+# Install essential packages and security tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install common Python packages for assessments
+COPY docker/python-requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Set working directory
+WORKDIR /assessment
+
+# Switch to non-root user
+USER sandbox
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    ASSESSMENT_MODE=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python3 -c "import sys; sys.exit(0)"
+
+# Default command - run tests
+CMD ["python3", "-m", "pytest", "-v", "--tb=short", "--timeout=300"]

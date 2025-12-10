@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  # LodeAI Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    ports:
+      - "3004:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    volumes:
+      - /app/node_modules
+    networks:
+      - lodeai-network
+    restart: unless-stopped
+
+  # Assessment Environment
+  assessment:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.assessment
+    ports:
+      - "3005:3000"
+      - "3006:3001"
+      - "8081:8080"
+    environment:
+      - NODE_ENV=development
+      - ASSESSMENT_MODE=true
+    volumes:
+      - ./assessments:/assessment
+      - /assessment/node_modules
+    networks:
+      - lodeai-network
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+
+  # Test Runner Service
+  test-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.assessment
+    environment:
+      - NODE_ENV=test
+      - TEST_MODE=true
+    volumes:
+      - ./assessments:/assessment
+      - /assessment/node_modules
+    networks:
+      - lodeai-network
+    command: ["/assessment/scripts/run-tests.sh"]
+    depends_on:
+      - assessment
+
+  # Python Sandbox for Assessment Execution
+  python-sandbox:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python-sandbox
+    container_name: lodeai-python-sandbox
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+      - /assessment:rw,noexec,nosuid,size=200m
+    mem_limit: 512m
+    cpus: 0.5
+    network_mode: none
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - ASSESSMENT_MODE=true
+      - SANDBOX_TIMEOUT=300
+    restart: "no"
+    command: ["python3", "-m", "pytest", "-v", "--tb=short", "--timeout=300"]
+
+  # Database (if using local database)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=lodeai
+      - POSTGRES_USER=lodeai
+      - POSTGRES_PASSWORD=lodeai123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5433:5432"
+    networks:
+      - lodeai-network
+    restart: unless-stopped
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - lodeai-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  lodeai-network:
+    driver: bridge
