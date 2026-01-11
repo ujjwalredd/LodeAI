@@ -39,8 +39,8 @@ export class Config {
         const config = vscode.workspace.getConfiguration('lodeai');
         
         return {
-            url: config.get<string>('supabaseUrl') || 'https://sgoplnmetluhnqiwigxs.supabase.co',
-            key: config.get<string>('supabaseKey') || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNnb3Bsbm1ldGx1aG5xaXdpZ3hzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMjI0NTUsImV4cCI6MjA3MzY5ODQ1NX0.Rd9b2df0ME8zbNGFsJqH1xoRxW1NW8ch-lBhlRk8h6w'
+            url: config.get<string>('supabaseUrl') || 'URL',
+            key: config.get<string>('supabaseKey') || 'KEY'
         };
     }
 
