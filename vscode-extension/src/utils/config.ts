@@ -21,7 +21,7 @@ export class Config {
 
     getClaudeApiKey(): string {
         const config = vscode.workspace.getConfiguration('lodeai');
-        const apiKey = config.get<string>('claudeApiKey') || process.env.CLAUDE_API_KEY || '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';
+        const apiKey = config.get<string>('claudeApiKey') || process.env.CLAUDE_API_KEY || 'API_KEY';
         
         if (!apiKey || apiKey === 'YOUR_CLAUDE_API_KEY_HERE') {
             throw new Error('Claude API key not configured. Please replace YOUR_CLAUDE_API_KEY_HERE with your actual API key in config.ts');
