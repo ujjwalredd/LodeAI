@@ -143,7 +143,7 @@ LodeAI is a comprehensive technical recruitment platform that combines cutting-e
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/ujjwalredd/LodeAI.git
    cd LodeAI-main
    ```
 
